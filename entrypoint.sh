@@ -177,7 +177,7 @@ TTL_INCREMENT=$(parse_config "ttl_increment" "multicast_relay")
 HOST_IFACE_CONFIG=$(parse_config "host_interface" "multicast_relay")
 
 # Apply defaults if not found in config
-RELAY_ENABLED="${RELAY_ENABLED:-true}"
+RELAY_ENABLED="${RELAY_ENABLED:-false}"
 ATTEMPT_MDNS="${ATTEMPT_MDNS:-false}"
 TTL_INCREMENT="${TTL_INCREMENT:-1}"
 HOST_IFACE_CONFIG="${HOST_IFACE_CONFIG:-auto}"

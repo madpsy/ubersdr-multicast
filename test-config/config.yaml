@@ -4,7 +4,7 @@ radiod:
   interface: "lo"
 
 multicast_relay:
-  enabled: true
+  enabled: false
   attempt_mdns_lookup: false
   ttl_increment: 1        # Increment TTL for multicast packets (default: 1)
   host_interface: auto    # Host network interface (default: auto, or specify like 'eth0', 'eno1')
