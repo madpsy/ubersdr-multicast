@@ -53,16 +53,20 @@ services:
       - NET_ADMIN  # Required for multicast routing
     environment:
       - RELAY_ENABLED=true
-      - DOCKER_IFACE=docker0
-      - HOST_IFACE=eth0
       - CONFIG_FILE=/config/config.yaml
     volumes:
       - ubersdr-config:/config:ro  # Read-only access to UberSDR config
       - restart-trigger:/var/run/restart-trigger  # Restart coordination
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # For network discovery
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket  # For host's Avahi
     restart: unless-stopped
     depends_on:
       - radiod
 ```
+
+**Note**: Network interfaces are now automatically discovered:
+- **Host interface**: Detected via default route
+- **Docker bridge**: Discovered from `ubersdr_sdr-network` (or fallback to `docker0`)
 
 ### Standalone Docker
 
@@ -74,10 +78,11 @@ docker run -d \
   --network host \
   --cap-add NET_ADMIN \
   -e RELAY_ENABLED=true \
-  -e DOCKER_IFACE=docker0 \
-  -e HOST_IFACE=eth0 \
+  -e CONFIG_FILE=/config/config.yaml \
   -v ubersdr-config:/config:ro \
   -v restart-trigger:/var/run/restart-trigger \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket \
   ubersdr-multicast
 ```
 
@@ -87,18 +92,34 @@ docker run -d \
 |----------|---------|-------------|
 | `RELAY_ENABLED` | `true` | Enable/disable the relay (set to `false` to disable) |
 | `CONFIG_FILE` | `/config/config.yaml` | Path to UberSDR config file |
-| `DOCKER_IFACE` | `docker0` | Docker bridge interface name |
-| `HOST_IFACE` | `eth0` | Host network interface name |
 
 ## Requirements
 
 - **Network Mode**: Must use `network_mode: host` for mDNS bridging to work
 - **Capabilities**: Requires `NET_ADMIN` capability for multicast routing
-- **Volumes**: 
+- **Host Requirements**: Avahi daemon must be running on the host (`systemctl status avahi-daemon`)
+- **Volumes**:
   - UberSDR config volume (read-only)
   - Restart trigger volume (shared with UberSDR)
+  - Docker socket (read-only, for automatic network discovery)
+  - Host's D-Bus socket (for mDNS publishing via host's Avahi daemon)
 
-## What Gets Bridged
+## Network Discovery
+
+The container automatically discovers network interfaces:
+
+1. **Host Interface**: Finds the interface with the default route using `ip route show default`
+   - Fallback: First non-loopback interface if no default route exists
+
+2. **Docker Bridge**: Discovers the bridge for `ubersdr_sdr-network` by:
+   - Querying Docker API via mounted socket
+   - Extracting network ID and deriving bridge name (`br-<network-id-prefix>`)
+   - Fallback: Tries alternative network names (`ubersdr-sdr-network`, `sdr-network`, `ubersdr_default`)
+   - Final fallback: Uses `docker0` if network not found
+
+This eliminates the need to manually configure interface names in your environment variables.
+
+## Configuration
 
 Based on UberSDR's `config.yaml`:
 
@@ -107,12 +128,36 @@ radiod:
   status_group: "hf-status.local:5006"  # Status/control channel
   data_group: "pcm.local:5004"          # Audio data channel
   interface: "lo"
+
+multicast_relay:
+  enabled: true                # Enable/disable relay (default: true)
+  attempt_mdns_lookup: false   # Try mDNS resolution before hash (default: false)
+  ttl_increment: 1             # Increment TTL for forwarded packets (default: 1)
+  host_interface: auto         # Host network interface (default: auto, or specify 'eth0', 'eno1', etc.)
 ```
 
 The relay will:
 1. Resolve `hf-status.local` and `pcm.local` to their multicast IPs (239.x.x.x range)
 2. Publish these names on the host network so external clients can resolve them
 3. Route multicast traffic for both groups bidirectionally
+4. Increment TTL of multicast packets to allow forwarding across network boundaries
+
+### TTL Configuration
+
+The `ttl_increment` setting solves a common issue where multicast sources (like radiod) send packets with TTL=1, which prevents them from being forwarded across network boundaries. The relay uses iptables to increment the TTL before forwarding:
+
+- **Default**: `1` (increments TTL from 1 to 2, allowing one forwarding hop)
+- **Range**: `1-255` (higher values allow more hops, but typically only 1 is needed)
+- **When to adjust**: If you have multiple network hops between Docker and your clients, increase this value
+
+### Host Interface Configuration
+
+The `host_interface` setting allows you to specify which network interface to use for the host side of the multicast relay:
+
+- **Default**: `auto` (automatically discovers the interface with the default route)
+- **Manual**: Specify an interface name like `eth0`, `eno1`, `wlan0`, etc.
+- **When to specify**: If you have multiple network interfaces and want to control which one is used for multicast forwarding
+- **Validation**: The script will verify the interface exists and show available interfaces if the specified one is not found
 
 ## Monitoring
 
@@ -157,12 +202,12 @@ touch /var/run/restart-trigger/restart-multicast-relay
 
 ### mDNS Names Not Resolving on Host
 
-1. Check if Avahi daemon is running:
+1. Check if host's Avahi daemon is running:
    ```bash
-   docker exec multicast-relay pgrep avahi-daemon
+   systemctl status avahi-daemon
    ```
 
-2. Check if publishers are running:
+2. Check if publishers are running in container:
    ```bash
    docker exec multicast-relay ps aux | grep avahi-publish
    ```
@@ -170,6 +215,12 @@ touch /var/run/restart-trigger/restart-multicast-relay
 3. Test resolution from host:
    ```bash
    avahi-resolve-host-name hf-status.local
+   avahi-browse -a
+   ```
+
+4. Verify D-Bus socket is accessible:
+   ```bash
+   docker exec multicast-relay ls -la /var/run/dbus/system_bus_socket
    ```
 
 ### Multicast Traffic Not Flowing
@@ -202,18 +253,17 @@ touch /var/run/restart-trigger/restart-multicast-relay
 ### Packages Installed
 
 - `smcroute` - Multicast routing daemon
-- `avahi-daemon` - mDNS/DNS-SD daemon
 - `avahi-utils` - Avahi command-line tools (avahi-publish-address, avahi-resolve-host-name)
-- `dbus` - Required by Avahi daemon
 - `iproute2` - Network configuration tools
+- `iptables` - Packet filtering and TTL manipulation
 
-### Avahi Configuration
+### mDNS Publishing
 
-The container uses a custom `/etc/avahi/avahi-daemon.conf`:
-- IPv4 only (IPv6 disabled)
-- Publishes addresses and domains
-- No workstation/HINFO publishing
-- Reflector disabled (we handle bridging manually)
+The container uses the **host's Avahi daemon** for mDNS publishing instead of running its own:
+- Connects to host's Avahi via D-Bus socket mount (`/var/run/dbus/system_bus_socket`)
+- Uses `avahi-publish-address` to register multicast addresses
+- Avoids conflicts with host's existing Avahi daemon
+- Requires host's Avahi daemon to be running (`systemctl status avahi-daemon`)
 
 ### Multicast Routing
 
@@ -221,6 +271,14 @@ Uses smcroute with bidirectional rules:
 - Docker → Host: Forwards multicast from docker0 to eth0
 - Host → Docker: Forwards multicast from eth0 to docker0
 - Joins multicast groups on both interfaces
+
+### TTL Handling
+
+The container uses iptables mangle table to increment TTL for multicast packets:
+- Rule: `iptables -t mangle -A PREROUTING -i <docker-bridge> -d 239.0.0.0/8 -j TTL --ttl-inc <value>`
+- Applied before routing decisions to ensure packets survive the forwarding hop
+- Configurable via `multicast_relay.ttl_increment` in config.yaml
+- Automatically cleaned up on container shutdown
 
 ## Integration with ka9q-radio
 

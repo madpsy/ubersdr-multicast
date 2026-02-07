@@ -2,3 +2,9 @@ radiod:
   status_group: "hf-status.local:5006"
   data_group: "pcm.local:5004"
   interface: "lo"
+
+multicast_relay:
+  enabled: true
+  attempt_mdns_lookup: false
+  ttl_increment: 1        # Increment TTL for multicast packets (default: 1)
+  host_interface: auto    # Host network interface (default: auto, or specify like 'eth0', 'eno1')

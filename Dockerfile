@@ -11,51 +11,30 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y \
     smcroute \
-    avahi-daemon \
     avahi-utils \
-    libavahi-client3 \
-    libavahi-common3 \
-    dbus \
     iproute2 \
     iputils-ping \
     net-tools \
     procps \
+    curl \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    iptables \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI for network discovery
+RUN install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc && \
+    chmod a+r /etc/apt/keyrings/docker.asc && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+    apt-get update && \
+    apt-get install -y docker-ce-cli && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create necessary directories
 RUN mkdir -p /config \
-    /var/run/restart-trigger \
-    /var/run/dbus \
-    /etc/avahi
-
-# Configure Avahi daemon for host network publishing
-RUN echo '[server]\n\
-use-ipv4=yes\n\
-use-ipv6=no\n\
-ratelimit-interval-usec=1000000\n\
-ratelimit-burst=1000\n\
-\n\
-[wide-area]\n\
-enable-wide-area=yes\n\
-\n\
-[publish]\n\
-publish-addresses=yes\n\
-publish-hinfo=no\n\
-publish-workstation=no\n\
-publish-domain=yes\n\
-publish-dns-servers=no\n\
-publish-resolv-conf-dns-servers=no\n\
-\n\
-[reflector]\n\
-enable-reflector=no\n\
-\n\
-[rlimits]\n\
-rlimit-core=0\n\
-rlimit-data=4194304\n\
-rlimit-fsize=0\n\
-rlimit-nofile=768\n\
-rlimit-stack=4194304\n\
-rlimit-nproc=3' > /etc/avahi/avahi-daemon.conf
+    /var/run/restart-trigger
 
 # Copy entrypoint script
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

@@ -14,19 +14,25 @@ services:
     environment:
       # Enable/disable the relay
       - RELAY_ENABLED=true
-      
-      # Network interfaces (adjust for your system)
-      - DOCKER_IFACE=docker0
-      - HOST_IFACE=eth0  # Change to your host interface (eth0, ens33, wlan0, etc.)
-      
+
       # Config file location
       - CONFIG_FILE=/config/config.yaml
+
+      # Note: Network interfaces are now auto-discovered
+      # - Host interface: Discovered via default route
+      # - Docker bridge: Discovered from ubersdr_sdr-network
     volumes:
       # Mount UberSDR config (read-only)
       - ubersdr-config:/config:ro
-      
+
       # Restart trigger coordination
       - restart-trigger:/var/run/restart-trigger
+
+      # Docker socket for network discovery (read-only)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+      # Host's D-Bus socket for Avahi mDNS publishing
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
     restart: unless-stopped
     depends_on:
       - radiod  # Wait for radiod to start first
@@ -40,6 +46,9 @@ volumes:
 
 # Notes:
 # 1. This container MUST use network_mode: host to bridge mDNS
-# 2. Adjust HOST_IFACE to match your actual network interface
+# 2. Network interfaces are now auto-discovered (no manual configuration needed)
 # 3. The volumes should reference your existing UberSDR volumes
-# 4. If radiod is in a different compose file, remove depends_on
+# 4. Docker socket mount is required for network discovery
+# 5. D-Bus socket mount is required for mDNS publishing via host's Avahi daemon
+# 6. Host's Avahi daemon must be running: systemctl status avahi-daemon
+# 7. If radiod is in a different compose file, remove depends_on
