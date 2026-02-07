@@ -1,0 +1,45 @@
+# Example Docker Compose configuration for UberSDR Multicast Relay
+# This shows how to integrate the multicast relay with your existing UberSDR setup
+
+version: '3.8'
+
+services:
+  # Multicast relay with Avahi mDNS bridge
+  multicast-relay:
+    build: .
+    container_name: multicast-relay
+    network_mode: host  # Required for mDNS bridging and multicast routing
+    cap_add:
+      - NET_ADMIN  # Required for multicast routing
+    environment:
+      # Enable/disable the relay
+      - RELAY_ENABLED=true
+      
+      # Network interfaces (adjust for your system)
+      - DOCKER_IFACE=docker0
+      - HOST_IFACE=eth0  # Change to your host interface (eth0, ens33, wlan0, etc.)
+      
+      # Config file location
+      - CONFIG_FILE=/config/config.yaml
+    volumes:
+      # Mount UberSDR config (read-only)
+      - ubersdr-config:/config:ro
+      
+      # Restart trigger coordination
+      - restart-trigger:/var/run/restart-trigger
+    restart: unless-stopped
+    depends_on:
+      - radiod  # Wait for radiod to start first
+
+# Volumes (these should match your existing UberSDR setup)
+volumes:
+  ubersdr-config:
+    external: true  # Use existing volume from UberSDR
+  restart-trigger:
+    external: true  # Use existing volume from UberSDR
+
+# Notes:
+# 1. This container MUST use network_mode: host to bridge mDNS
+# 2. Adjust HOST_IFACE to match your actual network interface
+# 3. The volumes should reference your existing UberSDR volumes
+# 4. If radiod is in a different compose file, remove depends_on

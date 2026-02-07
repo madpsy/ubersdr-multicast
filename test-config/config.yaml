@@ -1,0 +1,4 @@
+radiod:
+  status_group: "hf-status.local:5006"
+  data_group: "pcm.local:5004"
+  interface: "lo"
