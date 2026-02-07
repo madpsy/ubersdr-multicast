@@ -1,21 +1,21 @@
-# UberSDR Multicast Relay with Avahi mDNS Bridge
+# UberSDR Multicast Relay
 
-A Docker container that bridges multicast traffic and mDNS service discovery between the Docker network and host network for ka9q-radio/UberSDR.
+A Docker container that bridges multicast traffic between the Docker network and host network for ka9q-radio/UberSDR.
 
 ## Features
 
 - **Intelligent Configuration**: Automatically reads UberSDR's `config.yaml` to discover multicast groups
-- **mDNS Bridging**: Resolves `.local` hostnames inside Docker and republishes them on the host network
+- **mDNS Resolution**: Resolves `.local` hostnames to multicast IPs using Avahi
 - **Bidirectional Multicast Routing**: Routes multicast traffic in both directions using smcroute
 - **Auto-restart**: Monitors restart trigger file to coordinate with UberSDR container restarts
-- **Health Monitoring**: Automatically restarts failed services (smcroute, Avahi)
+- **Health Monitoring**: Automatically restarts failed services (smcroute)
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        Host Network                          │
-│  External Clients ←→ [eth0] ←→ Avahi mDNS Publisher        │
+│  External Clients ←→ [eth0]                                 │
 └────────────────────────────┬────────────────────────────────┘
                              │
                     Multicast Routing
@@ -33,9 +33,8 @@ A Docker container that bridges multicast traffic and mDNS service discovery bet
 
 1. **Config Parsing**: Reads `/config/config.yaml` to extract `status_group` and `data_group`
 2. **mDNS Resolution**: Uses Avahi to resolve `.local` hostnames to multicast IPs inside Docker
-3. **mDNS Publishing**: Republishes the same hostnames on the host network via `avahi-publish-address`
-4. **Multicast Routing**: Configures smcroute to forward multicast traffic bidirectionally
-5. **Monitoring**: Watches for process failures and restart triggers
+3. **Multicast Routing**: Configures smcroute to forward multicast traffic bidirectionally
+4. **Monitoring**: Watches for process failures and restart triggers
 
 ## Usage
 
@@ -48,7 +47,7 @@ services:
   multicast-relay:
     build: /home/nathan/repos/ubersdr-multicast
     container_name: multicast-relay
-    network_mode: host  # Required for mDNS bridging
+    network_mode: host  # Required for multicast routing
     cap_add:
       - NET_ADMIN  # Required for multicast routing
     environment:
@@ -58,7 +57,6 @@ services:
       - ubersdr-config:/config:ro  # Read-only access to UberSDR config
       - restart-trigger:/var/run/restart-trigger  # Restart coordination
       - /var/run/docker.sock:/var/run/docker.sock:ro  # For network discovery
-      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket  # For host's Avahi
     restart: unless-stopped
     depends_on:
       - radiod
@@ -82,7 +80,6 @@ docker run -d \
   -v ubersdr-config:/config:ro \
   -v restart-trigger:/var/run/restart-trigger \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  -v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket \
   ubersdr-multicast
 ```
 
@@ -95,14 +92,12 @@ docker run -d \
 
 ## Requirements
 
-- **Network Mode**: Must use `network_mode: host` for mDNS bridging to work
+- **Network Mode**: Must use `network_mode: host` for multicast routing to work
 - **Capabilities**: Requires `NET_ADMIN` capability for multicast routing
-- **Host Requirements**: Avahi daemon must be running on the host (`systemctl status avahi-daemon`)
 - **Volumes**:
   - UberSDR config volume (read-only)
   - Restart trigger volume (shared with UberSDR)
   - Docker socket (read-only, for automatic network discovery)
-  - Host's D-Bus socket (for mDNS publishing via host's Avahi daemon)
 
 ## Network Discovery
 
@@ -138,9 +133,8 @@ multicast_relay:
 
 The relay will:
 1. Resolve `hf-status.local` and `pcm.local` to their multicast IPs (239.x.x.x range)
-2. Publish these names on the host network so external clients can resolve them
-3. Route multicast traffic for both groups bidirectionally
-4. Increment TTL of multicast packets to allow forwarding across network boundaries
+2. Route multicast traffic for both groups bidirectionally
+3. Increment TTL of multicast packets to allow forwarding across network boundaries
 
 ### TTL Configuration
 
@@ -170,9 +164,6 @@ docker logs multicast-relay
 # Check if smcroute is running
 docker exec multicast-relay pgrep smcroute
 
-# Check Avahi publishers
-docker exec multicast-relay pgrep avahi-publish
-
 # View smcroute configuration
 docker exec multicast-relay cat /etc/smcroute.conf
 
@@ -199,29 +190,6 @@ touch /var/run/restart-trigger/restart-multicast-relay
 ```
 
 ## Troubleshooting
-
-### mDNS Names Not Resolving on Host
-
-1. Check if host's Avahi daemon is running:
-   ```bash
-   systemctl status avahi-daemon
-   ```
-
-2. Check if publishers are running in container:
-   ```bash
-   docker exec multicast-relay ps aux | grep avahi-publish
-   ```
-
-3. Test resolution from host:
-   ```bash
-   avahi-resolve-host-name hf-status.local
-   avahi-browse -a
-   ```
-
-4. Verify D-Bus socket is accessible:
-   ```bash
-   docker exec multicast-relay ls -la /var/run/dbus/system_bus_socket
-   ```
 
 ### Multicast Traffic Not Flowing
 
@@ -253,17 +221,8 @@ touch /var/run/restart-trigger/restart-multicast-relay
 ### Packages Installed
 
 - `smcroute` - Multicast routing daemon
-- `avahi-utils` - Avahi command-line tools (avahi-publish-address, avahi-resolve-host-name)
 - `iproute2` - Network configuration tools
 - `iptables` - Packet filtering and TTL manipulation
-
-### mDNS Publishing
-
-The container uses the **host's Avahi daemon** for mDNS publishing instead of running its own:
-- Connects to host's Avahi via D-Bus socket mount (`/var/run/dbus/system_bus_socket`)
-- Uses `avahi-publish-address` to register multicast addresses
-- Avoids conflicts with host's existing Avahi daemon
-- Requires host's Avahi daemon to be running (`systemctl status avahi-daemon`)
 
 ### Multicast Routing
 
@@ -285,10 +244,8 @@ The container uses iptables mangle table to increment TTL for multicast packets:
 This container is designed to work with the ka9q-radio ecosystem:
 
 1. **radiod** runs inside Docker and uses Avahi to advertise services
-2. **multicast-relay** bridges those services to the host network
-3. **External clients** can discover and connect to services as if they were local
-
-The relay is transparent - clients see the same `.local` hostnames and multicast addresses whether they're inside or outside Docker.
+2. **multicast-relay** bridges multicast traffic to the host network
+3. **External clients** can connect to services using the multicast addresses
 
 ## License
 

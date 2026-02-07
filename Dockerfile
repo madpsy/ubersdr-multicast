@@ -1,6 +1,5 @@
-# UberSDR Multicast Relay with Avahi mDNS Bridge
+# UberSDR Multicast Relay
 # Forwards multicast traffic from Docker network to host network
-# Republishes .local mDNS names for external client resolution
 
 FROM ubuntu:24.04
 
@@ -11,7 +10,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y \
     smcroute \
-    avahi-utils \
     iproute2 \
     iputils-ping \
     net-tools \

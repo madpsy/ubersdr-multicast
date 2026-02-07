@@ -4,11 +4,11 @@
 version: '3.8'
 
 services:
-  # Multicast relay with Avahi mDNS bridge
+  # Multicast relay
   multicast-relay:
     build: .
     container_name: multicast-relay
-    network_mode: host  # Required for mDNS bridging and multicast routing
+    network_mode: host  # Required for multicast routing
     cap_add:
       - NET_ADMIN  # Required for multicast routing
     environment:
@@ -30,9 +30,6 @@ services:
 
       # Docker socket for network discovery (read-only)
       - /var/run/docker.sock:/var/run/docker.sock:ro
-
-      # Host's D-Bus socket for Avahi mDNS publishing
-      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
     restart: unless-stopped
     depends_on:
       - radiod  # Wait for radiod to start first
@@ -45,10 +42,8 @@ volumes:
     external: true  # Use existing volume from UberSDR
 
 # Notes:
-# 1. This container MUST use network_mode: host to bridge mDNS
+# 1. This container MUST use network_mode: host for multicast routing
 # 2. Network interfaces are now auto-discovered (no manual configuration needed)
 # 3. The volumes should reference your existing UberSDR volumes
 # 4. Docker socket mount is required for network discovery
-# 5. D-Bus socket mount is required for mDNS publishing via host's Avahi daemon
-# 6. Host's Avahi daemon must be running: systemctl status avahi-daemon
-# 7. If radiod is in a different compose file, remove depends_on
+# 5. If radiod is in a different compose file, remove depends_on

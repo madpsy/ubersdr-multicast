@@ -1,6 +1,6 @@
 #!/bin/bash
-# UberSDR Multicast Relay with Avahi mDNS Bridge
-# Reads UberSDR config, resolves multicast groups, republishes mDNS, and routes traffic
+# UberSDR Multicast Relay
+# Reads UberSDR config, resolves multicast groups, and routes traffic
 
 set -e
 
@@ -26,7 +26,7 @@ RESTART_TRIGGER="/var/run/restart-trigger/restart-multicast-relay"
 WATCHER_PID=$!
 
 echo "=========================================="
-echo "UberSDR Multicast Relay with Avahi Bridge"
+echo "UberSDR Multicast Relay"
 echo "=========================================="
 echo "Config file: $CONFIG_FILE"
 echo "Restart trigger watcher: PID $WATCHER_PID"
@@ -79,14 +79,6 @@ cleanup() {
     # Remove iptables TTL rule
     if [ -n "$DOCKER_IFACE" ] && [ -n "$TTL_INCREMENT" ] && command -v iptables &> /dev/null; then
         iptables -t mangle -D PREROUTING -i "$DOCKER_IFACE" -d 239.0.0.0/8 -j TTL --ttl-inc "$TTL_INCREMENT" 2>/dev/null || true
-    fi
-
-    # Stop Avahi publishers (using host's Avahi via D-Bus)
-    if [ -n "$AVAHI_PID_STATUS" ]; then
-        kill $AVAHI_PID_STATUS 2>/dev/null || true
-    fi
-    if [ -n "$AVAHI_PID_DATA" ]; then
-        kill $AVAHI_PID_DATA 2>/dev/null || true
     fi
 
     # Stop smcroute
@@ -391,20 +383,6 @@ else
     echo "  WARNING: iptables not available, TTL=1 packets will be dropped during forwarding"
 fi
 
-# Verify host's Avahi daemon is accessible via D-Bus
-echo ""
-echo "Checking host's Avahi daemon..."
-if ! avahi-browse -p -t 2>/dev/null | head -1 >/dev/null 2>&1; then
-    echo "WARNING: Cannot connect to host's Avahi daemon via D-Bus"
-    echo "Make sure:"
-    echo "  1. Avahi daemon is running on the host: systemctl status avahi-daemon"
-    echo "  2. Host's D-Bus socket is mounted: /var/run/dbus/system_bus_socket"
-    echo ""
-    echo "Continuing anyway, but mDNS publishing may not work..."
-else
-    echo "Successfully connected to host's Avahi daemon"
-fi
-
 # Resolve multicast addresses
 echo ""
 echo "Resolving multicast addresses..."
@@ -424,20 +402,6 @@ fi
 echo "Resolved addresses:"
 echo "  $STATUS_HOST -> $STATUS_IP"
 echo "  $DATA_HOST -> $DATA_IP"
-
-# Republish mDNS names on host network using host's Avahi daemon
-echo ""
-echo "Publishing mDNS names on host network (via host's Avahi daemon)..."
-avahi-publish-address "$STATUS_HOST" "$STATUS_IP" &
-AVAHI_PID_STATUS=$!
-echo "  $STATUS_HOST -> $STATUS_IP (PID: $AVAHI_PID_STATUS)"
-
-avahi-publish-address "$DATA_HOST" "$DATA_IP" &
-AVAHI_PID_DATA=$!
-echo "  $DATA_HOST -> $DATA_IP (PID: $AVAHI_PID_DATA)"
-
-# Give Avahi time to publish
-sleep 2
 
 # Configure smcroute
 echo "" >&2
@@ -489,10 +453,6 @@ echo "Routing:" >&2
 echo "  $STATUS_HOST ($STATUS_IP:$STATUS_PORT) <-> $DOCKER_IFACE <-> $HOST_IFACE" >&2
 echo "  $DATA_HOST ($DATA_IP:$DATA_PORT) <-> $DOCKER_IFACE <-> $HOST_IFACE" >&2
 echo "" >&2
-echo "mDNS publishing:" >&2
-echo "  $STATUS_HOST -> $STATUS_IP (on host network)" >&2
-echo "  $DATA_HOST -> $DATA_IP (on host network)" >&2
-echo "" >&2
 
 # Keep container running and monitor processes
 echo "Monitoring processes (PID: $$)..." >&2
@@ -505,19 +465,6 @@ while true; do
         echo "ERROR: smcroute died, restarting..."
         smcroute -d -f /etc/smcroute.conf
         sleep 2
-    fi
-
-    # Check if Avahi publishers are still running
-    if [ -n "$AVAHI_PID_STATUS" ] && ! kill -0 $AVAHI_PID_STATUS 2>/dev/null; then
-        echo "ERROR: avahi-publish-address for $STATUS_HOST died, restarting..."
-        avahi-publish-address "$STATUS_HOST" "$STATUS_IP" &
-        AVAHI_PID_STATUS=$!
-    fi
-
-    if [ -n "$AVAHI_PID_DATA" ] && ! kill -0 $AVAHI_PID_DATA 2>/dev/null; then
-        echo "ERROR: avahi-publish-address for $DATA_HOST died, restarting..."
-        avahi-publish-address "$DATA_HOST" "$DATA_IP" &
-        AVAHI_PID_DATA=$!
     fi
 
     sleep 10
