@@ -1,5 +1,12 @@
 #!/bin/bash
 # Build and push ubersdr-multicast to Docker Hub and Git
+#
+# Usage:
+#   ./docker.sh [arm64|<tag>]
+#
+#   (no arg)  — build & push linux/amd64 image tagged 'latest' (default)
+#   arm64     — build linux/arm64 image tagged 'latest' (no push)
+#   <tag>     — build & push linux/amd64 image with the given version tag
 
 set -e
 
@@ -7,12 +14,29 @@ set -e
 DOCKER_USERNAME="${DOCKER_USERNAME:-madpsy}"
 IMAGE_NAME="ubersdr-multicast"
 FULL_IMAGE="${DOCKER_USERNAME}/${IMAGE_NAME}"
+PLATFORM="${PLATFORM:-linux/amd64}"
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+
+# arm64 shortcut — build only, no git/push operations
+if [ "${1:-}" = "arm64" ]; then
+    echo "=========================================="
+    echo "UberSDR Multicast - ARM64 Build"
+    echo "=========================================="
+    echo ""
+    echo -e "${GREEN}Building image: ${FULL_IMAGE}:latest (linux/arm64)${NC}"
+    docker build --platform linux/arm64 -t "${FULL_IMAGE}:latest" .
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Build failed!${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}Build successful: ${FULL_IMAGE}:latest (linux/arm64)${NC}"
+    exit 0
+fi
 
 echo "=========================================="
 echo "UberSDR Multicast - Git & Docker Push"
