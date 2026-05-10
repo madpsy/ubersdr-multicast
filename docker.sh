@@ -1,140 +1,86 @@
-#!/bin/bash
-# Build and push ubersdr-multicast to Docker Hub and Git
+#!/usr/bin/env bash
+# docker.sh — build the ubersdr-multicast Docker image
+#
+# All binaries are built from source inside the Docker image.
+# No host binaries are required.
 #
 # Usage:
-#   ./docker.sh [arm64|<tag>]
+#   ./docker.sh [build|arm64|push|run]
 #
-#   (no arg)  — build & push linux/amd64 image tagged 'latest' (default)
-#   arm64     — build linux/arm64 image tagged 'latest' (no push)
-#   <tag>     — build & push linux/amd64 image with the given version tag
+#   build  — build the image for linux/amd64 (default)
+#   arm64  — build the image for linux/arm64 (Raspberry Pi, Apple Silicon, etc.)
+#   push   — build then push to registry (set IMAGE env var)
+#   run    — run the image locally (set env vars below)
+#
+# Environment variables (build):
+#   IMAGE      Docker image name/tag   (default: madpsy/ubersdr-multicast:latest)
+#   PLATFORM   Docker --platform flag  (default: linux/amd64)
 
-set -e
+set -euo pipefail
 
-# Configuration
-DOCKER_USERNAME="${DOCKER_USERNAME:-madpsy}"
-IMAGE_NAME="ubersdr-multicast"
-FULL_IMAGE="${DOCKER_USERNAME}/${IMAGE_NAME}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+IMAGE="${IMAGE:-madpsy/ubersdr-multicast:latest}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-# arm64 shortcut — build only, no git/push operations
-if [ "${1:-}" = "arm64" ]; then
-    echo "=========================================="
-    echo "UberSDR Multicast - ARM64 Build"
-    echo "=========================================="
-    echo ""
-    echo -e "${GREEN}Building image: ${FULL_IMAGE}:latest (linux/arm64)${NC}"
-    docker build --platform linux/arm64 -t "${FULL_IMAGE}:latest" .
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Build failed!${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}Build successful: ${FULL_IMAGE}:latest (linux/arm64)${NC}"
-    exit 0
-fi
+die() { echo "error: $*" >&2; exit 1; }
 
-echo "=========================================="
-echo "UberSDR Multicast - Git & Docker Push"
-echo "=========================================="
-echo ""
+check_deps() {
+    command -v docker >/dev/null || die "docker not found in PATH"
+}
 
-# Get version/tag
-if [ -n "$1" ]; then
-    TAG="$1"
-else
-    # Default to 'latest'
-    TAG="latest"
-fi
+build() {
+    check_deps
 
-# Git operations
-echo -e "${YELLOW}Checking git status...${NC}"
-if [ -n "$(git status --porcelain)" ]; then
-    echo "Changes detected. Committing to git..."
+    TMPCTX="$(mktemp -d)"
+    trap 'rm -rf "$TMPCTX"' EXIT
+
+    echo "Staging build context in $TMPCTX..."
+
+    rsync -a --exclude='.git' \
+              "$SCRIPT_DIR/" "$TMPCTX/"
+
+    echo "Building image $IMAGE (platform=$PLATFORM)..."
+    docker build \
+        --platform "$PLATFORM" \
+        --tag "$IMAGE" \
+        "$TMPCTX"
+
+    echo "Built: $IMAGE"
+}
+
+push() {
+    build
+    echo "Pushing $IMAGE..."
+    docker push "$IMAGE"
+    echo "Committing and pushing git repository..."
     git add -A
+    git diff --cached --quiet || git commit -m "Release $IMAGE"
+    git push
+}
 
-    # Use tag as commit message if provided, otherwise use default
-    if [ "$TAG" != "latest" ]; then
-        COMMIT_MSG="Release ${TAG}"
-    else
-        COMMIT_MSG="Update $(date +%Y-%m-%d)"
-    fi
+run_image() {
+    docker run --rm -it \
+        --platform "$PLATFORM" \
+        "$IMAGE" \
+        "$@"
+}
 
-    git commit -m "$COMMIT_MSG"
-    echo -e "${GREEN}Changes committed: $COMMIT_MSG${NC}"
-else
-    echo "No changes to commit."
-fi
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
-echo ""
-echo "Pushing to git remote..."
-git push
-
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Git push failed!${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}Git push successful!${NC}"
-echo ""
-
-echo -e "${GREEN}Building image: ${FULL_IMAGE}:${TAG}${NC}"
-echo ""
-
-# Build the image
-echo "Building Docker image..."
-docker build -t "${FULL_IMAGE}:${TAG}" .
-
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Build failed!${NC}"
-    exit 1
-fi
-
-echo ""
-echo -e "${GREEN}Build successful!${NC}"
-echo ""
-
-# Also tag as latest if a specific version was provided
-if [ "$TAG" != "latest" ]; then
-    echo "Tagging as latest..."
-    docker tag "${FULL_IMAGE}:${TAG}" "${FULL_IMAGE}:latest"
-fi
-
-# Push to Docker Hub
-echo ""
-echo "Pushing to Docker Hub..."
-echo "  ${FULL_IMAGE}:${TAG}"
-
-docker push "${FULL_IMAGE}:${TAG}"
-
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Push failed!${NC}"
-    exit 1
-fi
-
-# Push latest tag if we created it
-if [ "$TAG" != "latest" ]; then
-    echo "  ${FULL_IMAGE}:latest"
-    docker push "${FULL_IMAGE}:latest"
-fi
-
-echo ""
-echo -e "${GREEN}=========================================="
-echo "Successfully pushed to Docker Hub!"
-echo "==========================================${NC}"
-echo ""
-echo "Image: ${FULL_IMAGE}:${TAG}"
-if [ "$TAG" != "latest" ]; then
-    echo "Also:  ${FULL_IMAGE}:latest"
-fi
-echo ""
-echo "To use this image:"
-echo "  docker pull ${FULL_IMAGE}:${TAG}"
-echo ""
-echo "Or in docker-compose.yml:"
-echo "  image: ${FULL_IMAGE}:${TAG}"
-echo ""
+case "${1:-build}" in
+    build) build ;;
+    arm64) PLATFORM=linux/arm64 build ;;
+    push)  push  ;;
+    run)   shift; run_image "$@" ;;
+    *)
+        echo "Usage: $0 [build|arm64|push|run [args...]]" >&2
+        exit 1
+        ;;
+esac
