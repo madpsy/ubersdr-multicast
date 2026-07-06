@@ -5,17 +5,19 @@
 # No host binaries are required.
 #
 # Usage:
-#   ./docker.sh [build|arm64|push|run]
+#   ./docker.sh [build|arm64|push|run|nocache]
 #
-#   build  — build the image for linux/amd64 (default) and load into local daemon
-#   arm64  — build the image for linux/arm64 and load into local daemon
-#   push   — build multi-arch manifest (amd64 + arm64) and push to registry
-#   run    — run the image locally (set env vars below)
+#   build    — build the image for linux/amd64 (default) and load into local daemon
+#   arm64    — build the image for linux/arm64 and load into local daemon
+#   push     — build multi-arch manifest (amd64 + arm64) and push to registry
+#   run      — run the image locally (set env vars below)
+#   nocache  — same as build but passes --no-cache to bypass the layer cache
 #
 # Environment variables (build):
 #   IMAGE      Docker image name/tag   (default: madpsy/ubersdr-multicast:latest)
 #   PLATFORM   Docker --platform flag  (default: linux/amd64)
 #   BUILDER    buildx builder name     (default: ubersdr-builder)
+#   NO_CACHE   Set to 1 to pass --no-cache (e.g. NO_CACHE=1 ./docker.sh build)
 
 set -euo pipefail
 
@@ -24,6 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="${IMAGE:-madpsy/ubersdr-multicast:latest}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 BUILDER="${BUILDER:-ubersdr-builder}"
+NO_CACHE="${NO_CACHE:-0}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -57,12 +60,16 @@ build_local() {
     ensure_builder
     stage_context
 
-    echo "Building image $IMAGE (platform=$PLATFORM)..."
+    local no_cache_flag=""
+    [ "$NO_CACHE" = "1" ] && no_cache_flag="--no-cache"
+
+    echo "Building image $IMAGE (platform=$PLATFORM${no_cache_flag:+, no-cache})..."
     docker buildx build \
         --builder "$BUILDER" \
         --platform "$PLATFORM" \
         --tag "$IMAGE" \
         --load \
+        $no_cache_flag \
         "$TMPCTX"
 
     echo "Built: $IMAGE"
@@ -102,12 +109,13 @@ run_image() {
 # ---------------------------------------------------------------------------
 
 case "${1:-build}" in
-    build) build_local ;;
-    arm64) PLATFORM=linux/arm64 build_local ;;
-    push)  push_multiarch ;;
-    run)   shift; run_image "$@" ;;
+    build)   build_local ;;
+    arm64)   PLATFORM=linux/arm64 build_local ;;
+    push)    push_multiarch ;;
+    run)     shift; run_image "$@" ;;
+    nocache) NO_CACHE=1 build_local ;;
     *)
-        echo "Usage: $0 [build|arm64|push|run [args...]]" >&2
+        echo "Usage: $0 [build|arm64|push|run|nocache [args...]]" >&2
         exit 1
         ;;
 esac
