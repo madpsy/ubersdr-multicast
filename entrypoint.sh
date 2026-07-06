@@ -69,6 +69,28 @@ parse_config() {
     fi
 }
 
+# Function to parse a YAML list under a section key
+# Returns one item per line, stripping leading "- " and quotes
+parse_config_list() {
+    local key=$1
+    local section=$2
+
+    awk -v section="$section" -v key="$key" '
+        $0 ~ "^" section ":" { in_section=1; next }
+        in_section && /^[^ ]/ { in_section=0 }
+        in_section && $0 ~ "^[[:space:]]+" key ":" { in_key=1; next }
+        in_key && /^[[:space:]]*-[[:space:]]/ {
+            sub(/^[[:space:]]*-[[:space:]]*/, "")
+            gsub(/"/, "")
+            gsub(/'\''/, "")
+            print
+            next
+        }
+        in_key && /^[[:space:]]+[^-]/ { in_key=0 }
+        in_key && /^[^ ]/ { in_key=0 }
+    ' "$CONFIG_FILE"
+}
+
 # Cleanup function
 # Accepts exit code parameter: 0 for normal shutdown, 1 to trigger Docker restart
 cleanup() {
@@ -176,6 +198,9 @@ ATTEMPT_MDNS=$(parse_config "attempt_mdns_lookup" "multicast_relay")
 TTL_INCREMENT=$(parse_config "ttl_increment" "multicast_relay")
 HOST_IFACE_CONFIG=$(parse_config "host_interface" "multicast_relay")
 
+# Parse extra_groups list (one entry per line, format: hostname:port or hostname)
+mapfile -t EXTRA_GROUPS < <(parse_config_list "extra_groups" "multicast_relay")
+
 # Apply defaults if not found in config
 RELAY_ENABLED="${RELAY_ENABLED:-false}"
 ATTEMPT_MDNS="${ATTEMPT_MDNS:-false}"
@@ -186,6 +211,12 @@ echo "Relay enabled: $RELAY_ENABLED"
 echo "Attempt mDNS lookup: $ATTEMPT_MDNS"
 echo "TTL increment: $TTL_INCREMENT"
 echo "Host interface config: $HOST_IFACE_CONFIG"
+echo "Extra groups: ${#EXTRA_GROUPS[@]} configured"
+if [ ${#EXTRA_GROUPS[@]} -gt 0 ]; then
+    for g in "${EXTRA_GROUPS[@]}"; do
+        echo "  - $g"
+    done
+fi
 echo ""
 
 # Dynamically discover network interfaces
@@ -386,13 +417,8 @@ fi
 # Resolve multicast addresses
 echo ""
 echo "Resolving multicast addresses..."
-echo "DEBUG: About to resolve STATUS_HOST=$STATUS_HOST"
 STATUS_IP=$(resolve_mcast "$STATUS_HOST")
-echo "DEBUG: STATUS_IP=$STATUS_IP"
-
-echo "DEBUG: About to resolve DATA_HOST=$DATA_HOST"
 DATA_IP=$(resolve_mcast "$DATA_HOST")
-echo "DEBUG: DATA_IP=$DATA_IP"
 
 if [ -z "$STATUS_IP" ] || [ -z "$DATA_IP" ]; then
     echo "ERROR: Failed to resolve multicast addresses"
@@ -403,30 +429,78 @@ echo "Resolved addresses:"
 echo "  $STATUS_HOST -> $STATUS_IP"
 echo "  $DATA_HOST -> $DATA_IP"
 
+# Resolve extra_groups IPs, deduplicating against core groups
+declare -a EXTRA_IPS=()
+declare -a EXTRA_HOSTS=()
+if [ ${#EXTRA_GROUPS[@]} -gt 0 ]; then
+    echo ""
+    echo "Resolving extra_groups..."
+    for entry in "${EXTRA_GROUPS[@]}"; do
+        local_host=$(echo "$entry" | cut -d: -f1)
+        local_ip=$(resolve_mcast "$local_host")
+        if [ -z "$local_ip" ]; then
+            echo "  WARNING: Could not resolve $local_host, skipping"
+            continue
+        fi
+        # Skip if already covered by status_group or data_group
+        if [ "$local_ip" = "$STATUS_IP" ] || [ "$local_ip" = "$DATA_IP" ]; then
+            echo "  $local_host -> $local_ip (duplicate of core group, skipping)"
+            continue
+        fi
+        # Skip if already added by a previous extra_groups entry
+        already_added=false
+        for existing_ip in "${EXTRA_IPS[@]}"; do
+            if [ "$existing_ip" = "$local_ip" ]; then
+                already_added=true
+                break
+            fi
+        done
+        if $already_added; then
+            echo "  $local_host -> $local_ip (duplicate extra group, skipping)"
+            continue
+        fi
+        echo "  $local_host -> $local_ip"
+        EXTRA_HOSTS+=("$local_host")
+        EXTRA_IPS+=("$local_ip")
+    done
+fi
+
+# Build unified list of all groups (core + deduplicated extras)
+ALL_HOSTS=("$STATUS_HOST" "$DATA_HOST" "${EXTRA_HOSTS[@]}")
+ALL_IPS=("$STATUS_IP" "$DATA_IP" "${EXTRA_IPS[@]}")
+
+echo ""
+echo "Final relay group list (${#ALL_IPS[@]} groups):"
+for i in "${!ALL_IPS[@]}"; do
+    echo "  ${ALL_HOSTS[$i]} -> ${ALL_IPS[$i]}"
+done
+
 # Configure smcroute
 echo "" >&2
 echo "Configuring smcroute for multicast routing..." >&2
 
 # Create smcroute config
-cat > /etc/smcroute.conf << EOF
-# UberSDR Multicast Relay Configuration
-# Auto-generated from $CONFIG_FILE
-
-# Enable multicast routing on interfaces
-mgroup from $DOCKER_IFACE group $STATUS_IP
-mgroup from $DOCKER_IFACE group $DATA_IP
-mgroup from $HOST_IFACE group $STATUS_IP
-mgroup from $HOST_IFACE group $DATA_IP
-
-# Bidirectional routing rules
-# Docker -> Host
-mroute from $DOCKER_IFACE group $STATUS_IP to $HOST_IFACE
-mroute from $DOCKER_IFACE group $DATA_IP to $HOST_IFACE
-
-# Host -> Docker
-mroute from $HOST_IFACE group $STATUS_IP to $DOCKER_IFACE
-mroute from $HOST_IFACE group $DATA_IP to $DOCKER_IFACE
-EOF
+{
+    echo "# UberSDR Multicast Relay Configuration"
+    echo "# Auto-generated from $CONFIG_FILE"
+    echo ""
+    echo "# Enable multicast routing on interfaces"
+    for ip in "${ALL_IPS[@]}"; do
+        echo "mgroup from $DOCKER_IFACE group $ip"
+        echo "mgroup from $HOST_IFACE group $ip"
+    done
+    echo ""
+    echo "# Bidirectional routing rules"
+    echo "# Docker -> Host"
+    for ip in "${ALL_IPS[@]}"; do
+        echo "mroute from $DOCKER_IFACE group $ip to $HOST_IFACE"
+    done
+    echo ""
+    echo "# Host -> Docker"
+    for ip in "${ALL_IPS[@]}"; do
+        echo "mroute from $HOST_IFACE group $ip to $DOCKER_IFACE"
+    done
+} > /etc/smcroute.conf
 
 echo "smcroute configuration:" >&2
 cat /etc/smcroute.conf >&2
@@ -449,9 +523,10 @@ echo "" >&2
 echo "==========================================" >&2
 echo "Multicast relay is now active!" >&2
 echo "==========================================" >&2
-echo "Routing:" >&2
-echo "  $STATUS_HOST ($STATUS_IP:$STATUS_PORT) <-> $DOCKER_IFACE <-> $HOST_IFACE" >&2
-echo "  $DATA_HOST ($DATA_IP:$DATA_PORT) <-> $DOCKER_IFACE <-> $HOST_IFACE" >&2
+echo "Routing (${#ALL_IPS[@]} groups):" >&2
+for i in "${!ALL_IPS[@]}"; do
+    echo "  ${ALL_HOSTS[$i]} (${ALL_IPS[$i]}) <-> $DOCKER_IFACE <-> $HOST_IFACE" >&2
+done
 echo "" >&2
 
 # Keep container running and monitor processes
