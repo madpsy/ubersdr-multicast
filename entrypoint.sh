@@ -197,8 +197,9 @@ RELAY_ENABLED=$(parse_config "enabled" "multicast_relay")
 ATTEMPT_MDNS=$(parse_config "attempt_mdns_lookup" "multicast_relay")
 TTL_INCREMENT=$(parse_config "ttl_increment" "multicast_relay")
 HOST_IFACE_CONFIG=$(parse_config "host_interface" "multicast_relay")
+EXTRA_GROUPS_ONLY=$(parse_config "extra_groups_only" "multicast_relay")
 
-# Parse extra_groups list (one entry per line, format: hostname:port or hostname)
+# Parse extra_groups list (one entry per line, format: hostname or hostname:port)
 mapfile -t EXTRA_GROUPS < <(parse_config_list "extra_groups" "multicast_relay")
 
 # Apply defaults if not found in config
@@ -206,11 +207,13 @@ RELAY_ENABLED="${RELAY_ENABLED:-false}"
 ATTEMPT_MDNS="${ATTEMPT_MDNS:-false}"
 TTL_INCREMENT="${TTL_INCREMENT:-1}"
 HOST_IFACE_CONFIG="${HOST_IFACE_CONFIG:-auto}"
+EXTRA_GROUPS_ONLY="${EXTRA_GROUPS_ONLY:-false}"
 
 echo "Relay enabled: $RELAY_ENABLED"
 echo "Attempt mDNS lookup: $ATTEMPT_MDNS"
 echo "TTL increment: $TTL_INCREMENT"
 echo "Host interface config: $HOST_IFACE_CONFIG"
+echo "Extra groups only: $EXTRA_GROUPS_ONLY"
 echo "Extra groups: ${#EXTRA_GROUPS[@]} configured"
 if [ ${#EXTRA_GROUPS[@]} -gt 0 ]; then
     for g in "${EXTRA_GROUPS[@]}"; do
@@ -465,15 +468,27 @@ if [ ${#EXTRA_GROUPS[@]} -gt 0 ]; then
     done
 fi
 
-# Build unified list of all groups (core + deduplicated extras)
-ALL_HOSTS=("$STATUS_HOST" "$DATA_HOST" "${EXTRA_HOSTS[@]}")
-ALL_IPS=("$STATUS_IP" "$DATA_IP" "${EXTRA_IPS[@]}")
+# Build unified list of all groups
+# When extra_groups_only=true, skip the core status/data groups
+if [ "$EXTRA_GROUPS_ONLY" = "true" ]; then
+    ALL_HOSTS=("${EXTRA_HOSTS[@]}")
+    ALL_IPS=("${EXTRA_IPS[@]}")
+    echo ""
+    echo "extra_groups_only=true: skipping status_group and data_group"
+else
+    ALL_HOSTS=("$STATUS_HOST" "$DATA_HOST" "${EXTRA_HOSTS[@]}")
+    ALL_IPS=("$STATUS_IP" "$DATA_IP" "${EXTRA_IPS[@]}")
+fi
 
 echo ""
 echo "Final relay group list (${#ALL_IPS[@]} groups):"
 for i in "${!ALL_IPS[@]}"; do
     echo "  ${ALL_HOSTS[$i]} -> ${ALL_IPS[$i]}"
 done
+
+if [ ${#ALL_IPS[@]} -eq 0 ]; then
+    echo "WARNING: No multicast groups to relay (extra_groups_only=true but extra_groups is empty)"
+fi
 
 # Configure smcroute
 echo "" >&2

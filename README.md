@@ -125,10 +125,11 @@ radiod:
   interface: lo
 
 multicast_relay:
-  enabled: true                # Enable/disable relay (default: true)
-  attempt_mdns_lookup: false   # Try mDNS resolution before hash (default: false)
-  ttl_increment: 1             # Increment TTL for forwarded packets (default: 1)
-  host_interface: auto         # Host network interface (default: auto, or specify 'eth0', 'eno1', etc.)
+  enabled: true                  # Enable/disable relay (default: true)
+  attempt_mdns_lookup: false     # Try mDNS resolution before hash (default: false)
+  ttl_increment: 1               # Increment TTL for forwarded packets (default: 1)
+  host_interface: auto           # Host network interface (default: auto, or specify 'eth0', 'eno1', etc.)
+  extra_groups_only: false       # When true, only relay extra_groups (skip status_group and data_group)
   # Optional: relay additional multicast groups beyond status_group and data_group
   extra_groups:
     - websdrLF.local
@@ -142,7 +143,7 @@ multicast_relay:
 The relay will:
 1. Resolve `hf-status.local` and `pcm.local` to their multicast IPs (239.x.x.x range)
 2. Resolve any `extra_groups` entries to their multicast IPs
-3. Route multicast traffic for all groups bidirectionally
+3. Route multicast traffic for all groups bidirectionally (or only `extra_groups` if `extra_groups_only: true`)
 4. Increment TTL of multicast packets to allow forwarding across network boundaries
 
 ### Extra Groups
@@ -169,6 +170,7 @@ multicast_relay:
 - **Format**: `hostname.local` — bare hostname only; no port needed (smcroute routes by multicast group IP, not port)
 - **IP resolution**: Uses the same FNV-1 hash as ka9q-radio (`make_maddr()`) to derive the `239.x.x.x` address, or mDNS if `attempt_mdns_lookup: true`
 - **No limit**: Any number of groups can be listed; each gets bidirectional `mgroup`/`mroute` entries in smcroute
+- **`extra_groups_only: true`**: Skips `status_group` and `data_group` entirely — only the listed `extra_groups` are relayed. Useful when the core groups are already handled elsewhere or not needed on the host network
 
 ### TTL Configuration
 
